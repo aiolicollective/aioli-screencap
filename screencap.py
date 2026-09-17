@@ -1,9 +1,9 @@
 """
-aioli-screencap -- capture periodique d'un ecran, avec Play / Pause / Stop.
+aioli-screencap -- periodic screen capture, with play / pause / stop.
 
-Aucune connexion reseau. Le programme n'ecrit que :
-  - les captures, dans le dossier que tu choisis ;
-  - config.json et logs/, dans le dossier de l'outil.
+No network connection. The program only writes:
+  - the captures, in the folder you pick;
+  - config.json and logs/, in the tool folder.
 """
 import ctypes
 import datetime
@@ -19,32 +19,51 @@ import time
 from logging.handlers import RotatingFileHandler
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from tkinter import font as tkfont
 
 try:
     import mss
     from PIL import Image
-    # mss >= 10.2 : mss.MSS ; mss.mss() est deprecie et disparaitra.
+    # mss >= 10.2: mss.MSS ; mss.mss() is deprecated and will be removed.
     MSS = getattr(mss, "MSS", None) or mss.mss
     IMPORT_ERROR = None
-except ImportError as e:  # venv absent ou incomplet
+except ImportError as e:  # venv missing or incomplete
     IMPORT_ERROR = e
 
 APP_NAME = "aioli-screencap"
+VERSION = "1.1"
+SITE = "aiolicollective.com"
+REPO = "github.com/aiolicollective/aioli-screencap"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 LOG_DIR = os.path.join(APP_DIR, "logs")
 
-UNITS = {"secondes": 1, "minutes": 60, "heures": 3600}
-MIN_INTERVAL = 1              # secondes
+UNITS = {"sec": 1, "min": 60, "h": 3600}
+# Values written by older versions of config.json
+LEGACY_UNITS = {"secondes": "sec", "seconds": "sec", "minutes": "min",
+                "heures": "h", "hours": "h"}
+FORMATS = ("JPG", "PNG")
+MIN_INTERVAL = 1              # seconds
 MAX_INTERVAL = 24 * 3600      # 24 h
-MAX_CONSECUTIVE_ERRORS = 5    # ex. disque plein : on arrete proprement
-MAX_RECENT = 8                # dossiers recents memorises
-IDENTIFY_MS = 2000            # duree d'affichage des numeros d'ecran
+MAX_CONSECUTIVE_ERRORS = 5    # e.g. disk full: stop cleanly
+MAX_RECENT = 8                # recent folders remembered
+IDENTIFY_MS = 2000            # how long the screen numbers stay up
+
+# Look: the collective's logo, "> ai.oli/", a terminal prompt in black on white.
+BG = "#ffffff"
+FG = "#111111"
+DIM = "#8a8a8a"
+LINE = "#d4d4d4"
+HOVER = "#efefef"
+HOVER_DARK = "#3a3a3a"
+REC = "#d8402b"               # the only colour: the recording dot
+MONO_FAMILIES = ("Cascadia Mono", "JetBrains Mono", "Consolas",
+                 "DejaVu Sans Mono", "Courier New")
 
 log = logging.getLogger(APP_NAME)
 
 
-# ------------------------------------------------------------------ outils
+# ------------------------------------------------------------------ helpers
 def setup_logging():
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -55,11 +74,11 @@ def setup_logging():
     except OSError:
         logging.basicConfig()
     log.setLevel(logging.INFO)
-    sys.excepthook = lambda *exc: log.error("Erreur non geree", exc_info=exc)
+    sys.excepthook = lambda *exc: log.error("Unhandled error", exc_info=exc)
 
 
 def enable_dpi_awareness():
-    """Captures en resolution reelle meme avec une mise a l'echelle Windows (125 %, 150 %...)."""
+    """Captures at real resolution even with Windows display scaling (125 %, 150 %...)."""
     if sys.platform != "win32":
         return
     try:
@@ -75,7 +94,7 @@ def load_config():
     cfg = {
         "folder": os.path.join(os.path.expanduser("~"), "Pictures", "Captures"),
         "interval": "5",
-        "unit": "minutes",
+        "unit": "min",
         "format": "JPG",
         "monitor": 2,
         "session_name": "",
@@ -86,16 +105,17 @@ def load_config():
             data = json.load(f)
         if isinstance(data, dict):
             for key, default in cfg.items():
-                if type(data.get(key)) is type(default):   # on ignore les valeurs mal typees
+                if type(data.get(key)) is type(default):   # ignore badly typed values
                     cfg[key] = data[key]
     except FileNotFoundError:
         pass
     except Exception:
-        log.warning("config.json illisible, valeurs par defaut utilisees", exc_info=True)
+        log.warning("Unreadable config.json, using defaults", exc_info=True)
     cfg["recent_folders"] = [f for f in cfg["recent_folders"] if isinstance(f, str)][:MAX_RECENT]
+    cfg["unit"] = LEGACY_UNITS.get(cfg["unit"], cfg["unit"])
     if cfg["unit"] not in UNITS:
-        cfg["unit"] = "minutes"
-    if cfg["format"] not in ("JPG", "PNG"):
+        cfg["unit"] = "min"
+    if cfg["format"] not in FORMATS:
         cfg["format"] = "JPG"
     return cfg
 
@@ -105,13 +125,13 @@ def save_config(cfg):
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, CONFIG_PATH)   # ecriture atomique
+        os.replace(tmp, CONFIG_PATH)   # atomic write
     except OSError:
-        log.warning("Impossible d'enregistrer config.json", exc_info=True)
+        log.warning("Could not save config.json", exc_info=True)
 
 
 def clean_name(text):
-    """Nom de session utilisable comme nom de dossier Windows."""
+    """Session name usable as a Windows folder name."""
     text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", text)
     text = re.sub(r"\s+", "_", text.strip()).strip("._")
     return text[:50]
@@ -128,24 +148,122 @@ def fmt_duration(seconds):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+def plural(n, word):
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def pick_mono(root):
+    available = set(tkfont.families(root))
+    for name in MONO_FAMILIES:
+        if name in available:
+            return name
+    return "TkFixedFont"
+
+
+def make_icon(root):
+    """Window icon: the '>' of the logo, black on white. Drawn here, no file needed."""
+    size, stroke = 32, 4
+    img = tk.PhotoImage(master=root, width=size, height=size)
+    img.put(BG, to=(0, 0, size, size))
+    for i in range(11):
+        img.put(FG, to=(7 + i, 5 + i, 7 + i + stroke, 5 + i + stroke))     # upper stroke
+        img.put(FG, to=(7 + i, 23 - i, 7 + i + stroke, 23 - i + stroke))   # lower stroke
+    return img
+
+
+# ------------------------------------------------------------------ widgets
+class FlatButton(tk.Label):
+    """Flat button with a thin black outline. A Label, so it looks the same on every system."""
+
+    def __init__(self, parent, text, command, font, primary=False, padx=10, pady=3):
+        super().__init__(parent, text=text, font=font, padx=padx, pady=pady,
+                         highlightthickness=1, bd=0, cursor="hand2")
+        self.command = command
+        self.primary = primary
+        self.enabled = True
+        self.selected = False
+        self.hover = False
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<ButtonRelease-1>", self._click)
+        self._paint()
+
+    def _set_hover(self, on):
+        self.hover = on
+        self._paint()
+
+    def _click(self, event):
+        inside = 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height()
+        if self.enabled and inside and self.command:
+            self.command()
+
+    def set_enabled(self, on):
+        self.enabled = on
+        self.configure(cursor="hand2" if on else "arrow")
+        self._paint()
+
+    def set_selected(self, on):
+        self.selected = on
+        self._paint()
+
+    def _paint(self):
+        if not self.enabled:
+            # a selected option stays readable while a session runs
+            bg, fg, border = (LINE, BG, LINE) if self.selected else (BG, LINE, LINE)
+        elif self.primary or self.selected:
+            bg, fg, border = (HOVER_DARK if self.hover else FG), BG, FG
+        else:
+            bg, fg, border = (HOVER if self.hover else BG), FG, FG
+        self.configure(bg=bg, fg=fg, highlightbackground=border, highlightcolor=border)
+
+
+class Toggle(tk.Frame):
+    """Row of FlatButtons, one selected: [sec] [min] [h]."""
+
+    def __init__(self, parent, options, variable, font, gap):
+        super().__init__(parent, bg=BG)
+        self.variable = variable
+        self.buttons = {}
+        for i, (value, label) in enumerate(options):
+            b = FlatButton(self, label, lambda v=value: variable.set(v), font, padx=8)
+            b.grid(row=0, column=i, padx=(0 if i == 0 else gap, 0))
+            self.buttons[value] = b
+        variable.trace_add("write", lambda *a: self._paint())
+        self._paint()
+
+    def _paint(self):
+        for value, b in self.buttons.items():
+            b.set_selected(value == self.variable.get())
+
+    def set_enabled(self, on):
+        for b in self.buttons.values():
+            b.set_enabled(on)
+
+
 # ------------------------------------------------------------ application
 class CaptureApp:
     def __init__(self, root):
         self.root = root
         root.title(APP_NAME)
         root.resizable(False, False)
+        root.configure(bg=BG)
         root.report_callback_exception = self.on_tk_error
+        try:
+            self.icon = make_icon(root)
+            root.iconphoto(True, self.icon)
+        except tk.TclError:
+            pass
 
         self.cfg = load_config()
-        self.run_event = threading.Event()    # active = capture en cours
-        self.stop_event = threading.Event()   # active = fin de session
-        self.msgs = queue.Queue()             # thread de capture -> interface
+        self.run_event = threading.Event()    # set = capturing
+        self.stop_event = threading.Event()   # set = end of session
+        self.msgs = queue.Queue()             # capture thread -> interface
         self.worker = None
         self.state = "stopped"
         self.count = 0
         self.next_capture = None
         self.monitors = []
-        self.overlays = []                    # fenetres "Identifier" ouvertes
+        self.overlays = []                    # open "identify" windows
         self.overlay_timer = None
 
         self.folder = tk.StringVar(value=self.cfg["folder"])
@@ -153,96 +271,174 @@ class CaptureApp:
         self.unit = tk.StringVar(value=self.cfg["unit"])
         self.fmt = tk.StringVar(value=self.cfg["format"])
         self.session_name = tk.StringVar(value=self.cfg["session_name"])
-        self.status = tk.StringVar(value="Arrêté")
-        self.detail = tk.StringVar(value="")
+        self.status = tk.StringVar(value="stopped")
+        self.detail = tk.StringVar(value="// ready")
 
-        pad = {"padx": 8, "pady": 4}
-        f = ttk.Frame(root, padding=10)
+        # Fonts in points (Tk scales them with the display); spacing scaled by hand.
+        scale = max(1.0, root.winfo_fpixels("1i") / 96.0)
+        px = lambda n: int(round(n * scale))
+        self.mono = pick_mono(root)
+        f_base = (self.mono, 10)
+        f_small = (self.mono, 9)
+        f_title = (self.mono, 15, "bold")
+        f_bold = (self.mono, 10, "bold")
+        self.setup_styles(f_base)
+
+        f = tk.Frame(root, bg=BG, padx=px(18), pady=px(14))
         f.grid()
+        f.columnconfigure(1, weight=1)
+        row_pad = {"pady": px(4)}
 
-        ttk.Label(f, text="Écran :").grid(row=0, column=0, sticky="w", **pad)
-        self.cb_mon = ttk.Combobox(f, state="readonly", width=38)
-        self.cb_mon.grid(row=0, column=1, sticky="w", **pad)
-        mon_btns = ttk.Frame(f)
-        mon_btns.grid(row=0, column=2, sticky="w", **pad)
-        self.b_refresh = ttk.Button(mon_btns, text="↻ Écrans", command=self.load_monitors)
+        def label(text, row):
+            tk.Label(f, text=text, font=f_base, bg=BG, fg=DIM).grid(
+                row=row, column=0, sticky="w", padx=(0, px(14)), **row_pad)
+
+        def rule(row):
+            tk.Frame(f, height=1, bg=LINE).grid(row=row, column=0, columnspan=3,
+                                                sticky="ew", pady=px(10))
+
+        # header: "> ai.oli/ screencap"
+        head = tk.Frame(f, bg=BG)
+        head.grid(row=0, column=0, columnspan=3, sticky="ew")
+        head.columnconfigure(1, weight=1)
+        tk.Label(head, text="> ai.oli/", font=f_title, bg=BG, fg=FG).grid(row=0, column=0, sticky="w")
+        tk.Label(head, text=" screencap", font=f_title, bg=BG, fg=DIM).grid(row=0, column=1, sticky="w")
+        tk.Label(head, text=f"v{VERSION}", font=f_small, bg=BG, fg=DIM).grid(row=0, column=2, sticky="e")
+        tk.Label(f, text="// periodic screen capture, without taking focus", font=f_small,
+                 bg=BG, fg=DIM).grid(row=1, column=0, columnspan=3, sticky="w")
+        rule(2)
+
+        # screen
+        label("screen", 3)
+        self.cb_mon = ttk.Combobox(f, state="readonly", width=34, style="Aioli.TCombobox",
+                                   font=f_base)
+        self.cb_mon.grid(row=3, column=1, sticky="ew", **row_pad)
+        mon_btns = tk.Frame(f, bg=BG)
+        mon_btns.grid(row=3, column=2, sticky="w", padx=(px(8), 0))
+        self.b_refresh = FlatButton(mon_btns, "↻ refresh", self.load_monitors, f_base)
         self.b_refresh.grid(row=0, column=0)
-        self.b_identify = ttk.Button(mon_btns, text="Identifier", command=self.identify)
-        self.b_identify.grid(row=0, column=1, padx=(6, 0))
+        self.b_identify = FlatButton(mon_btns, "identify", self.identify, f_base)
+        self.b_identify.grid(row=0, column=1, padx=(px(6), 0))
 
-        ttk.Label(f, text="Dossier :").grid(row=1, column=0, sticky="w", **pad)
-        # Liste deroulante des dossiers recents, mais on peut aussi taper un chemin
-        self.e_folder = ttk.Combobox(f, textvariable=self.folder, width=38,
-                                     values=self.cfg["recent_folders"])
-        self.e_folder.grid(row=1, column=1, sticky="w", **pad)
-        self.b_browse = ttk.Button(f, text="Parcourir…", command=self.browse)
-        self.b_browse.grid(row=1, column=2, **pad)
+        # folder: recent folders in the list, or type a path
+        label("folder", 4)
+        self.e_folder = ttk.Combobox(f, textvariable=self.folder, width=34, font=f_base,
+                                     style="Aioli.TCombobox", values=self.cfg["recent_folders"])
+        self.e_folder.grid(row=4, column=1, sticky="ew", **row_pad)
+        self.b_browse = FlatButton(f, "browse…", self.browse, f_base)
+        self.b_browse.grid(row=4, column=2, sticky="w", padx=(px(8), 0))
 
-        ttk.Label(f, text="Nom de session :").grid(row=2, column=0, sticky="w", **pad)
-        self.e_name = ttk.Entry(f, textvariable=self.session_name, width=40)
-        self.e_name.grid(row=2, column=1, sticky="w", **pad)
-        ttk.Label(f, text="(optionnel)", foreground="gray").grid(row=2, column=2, sticky="w", **pad)
+        # session name
+        label("session", 5)
+        self.e_name = self.entry(f, self.session_name, f_base, width=36)
+        self.e_name.grid(row=5, column=1, sticky="ew", **row_pad)
+        tk.Label(f, text="// optional", font=f_small, bg=BG, fg=DIM).grid(
+            row=5, column=2, sticky="w", padx=(px(8), 0))
 
-        ttk.Label(f, text="Intervalle :").grid(row=3, column=0, sticky="w", **pad)
-        row = ttk.Frame(f)
-        row.grid(row=3, column=1, sticky="w", **pad)
-        self.e_int = ttk.Entry(row, textvariable=self.interval, width=8)
-        self.e_int.grid(row=0, column=0)
-        self.cb_unit = ttk.Combobox(row, values=list(UNITS), textvariable=self.unit,
-                                    state="readonly", width=10)
-        self.cb_unit.grid(row=0, column=1, padx=(6, 0))
+        # interval
+        label("every", 6)
+        every = tk.Frame(f, bg=BG)
+        every.grid(row=6, column=1, sticky="w", **row_pad)
+        self.e_int = self.entry(every, self.interval, f_base, width=6)
+        self.e_int.grid(row=0, column=0, sticky="ns", padx=(0, px(8)))
+        self.t_unit = Toggle(every, [(u, u) for u in UNITS], self.unit, f_base, px(4))
+        self.t_unit.grid(row=0, column=1)
 
-        ttk.Label(f, text="Format :").grid(row=4, column=0, sticky="w", **pad)
-        self.cb_fmt = ttk.Combobox(f, values=["JPG", "PNG"], textvariable=self.fmt,
-                                   state="readonly", width=6)
-        self.cb_fmt.grid(row=4, column=1, sticky="w", **pad)
+        # format
+        label("format", 7)
+        self.t_fmt = Toggle(f, [(x, x.lower()) for x in FORMATS], self.fmt, f_base, px(4))
+        self.t_fmt.grid(row=7, column=1, sticky="w", **row_pad)
+        rule(8)
 
-        btns = ttk.Frame(f)
-        btns.grid(row=5, column=0, columnspan=3, pady=10)
-        self.b_play = ttk.Button(btns, text="▶ Play", command=self.play)
-        self.b_pause = ttk.Button(btns, text="⏸ Pause", command=self.pause)
-        self.b_stop = ttk.Button(btns, text="⏹ Stop", command=self.stop)
+        # transport
+        btns = tk.Frame(f, bg=BG)
+        btns.grid(row=9, column=0, columnspan=3, sticky="w")
+        self.b_play = FlatButton(btns, "▶ play", self.play, f_bold, primary=True, padx=16, pady=5)
+        self.b_pause = FlatButton(btns, "❚❚ pause", self.pause, f_bold, padx=16, pady=5)
+        self.b_stop = FlatButton(btns, "■ stop", self.stop, f_bold, padx=16, pady=5)
         for i, b in enumerate((self.b_play, self.b_pause, self.b_stop)):
-            b.grid(row=0, column=i, padx=6)
+            b.grid(row=0, column=i, padx=(0 if i == 0 else px(8), 0))
 
-        ttk.Label(f, textvariable=self.status).grid(row=6, column=0, columnspan=3, sticky="w", **pad)
-        ttk.Label(f, textvariable=self.detail, foreground="gray").grid(
-            row=7, column=0, columnspan=3, sticky="w", **pad)
+        # status: "> stopped" / "● recording · ..."
+        st = tk.Frame(f, bg=BG)
+        st.grid(row=10, column=0, columnspan=3, sticky="w", pady=(px(12), 0))
+        self.l_prompt = tk.Label(st, text=">", font=f_bold, bg=BG, fg=FG)
+        self.l_prompt.grid(row=0, column=0)
+        tk.Label(st, textvariable=self.status, font=f_base, bg=BG, fg=FG).grid(
+            row=0, column=1, padx=(px(6), 0))
+        tk.Label(f, textvariable=self.detail, font=f_small, bg=BG, fg=DIM).grid(
+            row=11, column=0, columnspan=3, sticky="w", pady=(px(2), 0))
+        rule(12)
 
-        self.settings = [self.cb_mon, self.b_refresh, self.b_identify, self.e_folder, self.b_browse,
-                         self.e_name, self.e_int, self.cb_unit, self.cb_fmt]
+        tk.Label(f, text=f"{SITE}  ·  {REPO}", font=f_small, bg=BG, fg=DIM).grid(
+            row=13, column=0, columnspan=3, sticky="w")
+
+        self.settings = [self.cb_mon, self.b_refresh, self.b_identify, self.e_folder,
+                         self.b_browse, self.e_name, self.e_int, self.t_unit, self.t_fmt]
         self.load_monitors()
         self.refresh_ui()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(250, self.poll)
 
+    # ---------- look ----------
+    def setup_styles(self, font):
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")   # flat theme that respects colours on every system
+        except tk.TclError:
+            pass
+        style.configure("Aioli.TCombobox", font=font, padding=3, foreground=FG,
+                        fieldbackground=BG, background=BG, bordercolor=LINE,
+                        selectbackground=BG, selectforeground=FG, arrowcolor=FG)
+        style.map("Aioli.TCombobox",
+                  fieldbackground=[("readonly", BG), ("disabled", BG)],
+                  foreground=[("disabled", DIM)],
+                  bordercolor=[("focus", FG), ("hover", FG)],
+                  selectbackground=[("focus", BG)],
+                  selectforeground=[("focus", FG)])
+        o = self.root.option_add
+        o("*TCombobox*Listbox.font", font)
+        o("*TCombobox*Listbox.background", BG)
+        o("*TCombobox*Listbox.foreground", FG)
+        o("*TCombobox*Listbox.selectBackground", FG)
+        o("*TCombobox*Listbox.selectForeground", BG)
+        o("*TCombobox*Listbox.borderWidth", 0)
+
+    @staticmethod
+    def entry(parent, variable, font, width):
+        return tk.Entry(parent, textvariable=variable, font=font, width=width,
+                        relief="flat", bd=4, bg=BG, fg=FG, insertbackground=FG,
+                        selectbackground=FG, selectforeground=BG,
+                        disabledbackground=BG, disabledforeground=DIM,
+                        highlightthickness=1, highlightbackground=LINE, highlightcolor=FG)
+
     # ---------- interface ----------
     def load_monitors(self):
         with MSS() as sct:
-            self.monitors = sct.monitors[1:]   # [0] = tous les ecrans reunis
-        labels = [f"Écran {i + 1} — {m['width']}x{m['height']} (position {m['left']},{m['top']})"
+            self.monitors = sct.monitors[1:]   # [0] = all screens combined
+        labels = [f"screen {i + 1} · {m['width']}x{m['height']} · at {m['left']},{m['top']}"
                   for i, m in enumerate(self.monitors)]
-        # On garde l'ecran deja choisi ; au demarrage, celui des reglages.
+        # Keep the screen already chosen; at startup, the one from the settings.
         wanted = self.cb_mon.current() + 1 if self.cb_mon.current() >= 0 else self.cfg.get("monitor", 2)
         self.cb_mon.configure(values=labels)
         self.cb_mon.current(min(max(wanted, 1), len(labels)) - 1)
 
     def identify(self):
-        """Affiche le numero de chaque ecran en son centre, IDENTIFY_MS millisecondes."""
+        """Shows each screen's number at its centre for IDENTIFY_MS milliseconds."""
         self.close_overlays()
         chosen = self.cb_mon.current()
         for i, m in enumerate(self.monitors):
             size = max(120, min(m["width"], m["height"]) // 3)
             x = m["left"] + (m["width"] - size) // 2
             y = m["top"] + (m["height"] - size) // 2
-            color = "#ffffff" if i == chosen else "#8c8c8c"   # l'ecran choisi en blanc
+            color = BG if i == chosen else DIM   # the chosen screen in white
             w = tk.Toplevel(self.root)
-            w.overrideredirect(True)            # pas de barre de titre
+            w.overrideredirect(True)            # no title bar
             w.attributes("-topmost", True)
-            w.configure(background="#000000", highlightthickness=4, highlightbackground=color)
+            w.configure(background=FG, highlightthickness=4, highlightbackground=color)
             w.geometry(f"{size}x{size}+{x}+{y}")
-            lbl = tk.Label(w, text=str(i + 1), fg=color, bg="#000000",
-                           font=("Segoe UI", -int(size * 0.6), "bold"))
+            lbl = tk.Label(w, text=str(i + 1), fg=color, bg=FG,
+                           font=(self.mono, -int(size * 0.6), "bold"))
             lbl.place(relx=0.5, rely=0.5, anchor="center")
             for widget in (w, lbl):
                 widget.bind("<Button-1>", lambda e: self.close_overlays())
@@ -250,7 +446,7 @@ class CaptureApp:
         self.overlay_timer = self.root.after(IDENTIFY_MS, self.close_overlays)
 
     def close_overlays(self):
-        """Ferme les numeros d'ecran. Renvoie True s'il y en avait d'affiches."""
+        """Closes the screen numbers. Returns True if some were shown."""
         was_open = bool(self.overlays)
         if self.overlay_timer is not None:
             self.root.after_cancel(self.overlay_timer)
@@ -258,7 +454,7 @@ class CaptureApp:
         for w in self.overlays:
             try:
                 w.destroy()
-            except tk.TclError:   # deja fermee
+            except tk.TclError:   # already closed
                 pass
         self.overlays = []
         return was_open
@@ -277,19 +473,27 @@ class CaptureApp:
     def refresh_ui(self):
         stopped = self.state == "stopped"
         for w in self.settings:
-            if w is self.e_folder:   # combobox editable
+            if isinstance(w, (FlatButton, Toggle)):
+                w.set_enabled(stopped)
+            elif w is self.e_folder:   # editable combobox
                 w.configure(state="normal" if stopped else "disabled")
             elif isinstance(w, ttk.Combobox):
                 w.configure(state="readonly" if stopped else "disabled")
             else:
                 w.configure(state="normal" if stopped else "disabled")
-        self.b_play.configure(state="disabled" if self.state == "running" else "normal")
-        self.b_pause.configure(state="normal" if self.state == "running" else "disabled")
-        self.b_stop.configure(state="disabled" if stopped else "normal")
+        self.b_play.set_enabled(self.state != "running")
+        self.b_pause.set_enabled(self.state == "running")
+        self.b_stop.set_enabled(not stopped)
+        if self.state == "running":
+            self.l_prompt.configure(text="●", fg=REC)
+        elif self.state == "paused":
+            self.l_prompt.configure(text="●", fg=DIM)
+        else:
+            self.l_prompt.configure(text=">", fg=FG)
 
     def play(self):
-        # Jamais de numero sur une capture : s'il y en avait, on laisse
-        # a l'ecran le temps de se redessiner avant la premiere image.
+        # Never a screen number on a capture: if some were shown, give the
+        # screen time to redraw before the first image.
         start_delay = 0.5 if self.close_overlays() else 0.0
         if self.state == "paused":
             self.state = "running"
@@ -303,13 +507,13 @@ class CaptureApp:
         except (ValueError, KeyError):
             seconds = -1
         if not MIN_INTERVAL <= seconds <= MAX_INTERVAL:
-            messagebox.showerror("Intervalle invalide",
-                                 "Choisis un intervalle entre 1 seconde et 24 heures.")
+            messagebox.showerror("Invalid interval",
+                                 "Pick an interval between 1 second and 24 hours.")
             return
 
         base = self.folder.get().strip()
         if not base:
-            messagebox.showerror("Dossier manquant", "Choisis un dossier de destination.")
+            messagebox.showerror("No folder", "Pick a destination folder.")
             return
         base = os.path.abspath(os.path.expanduser(base))
         name = clean_name(self.session_name.get()) or "session"
@@ -317,12 +521,12 @@ class CaptureApp:
         folder = os.path.join(base, session)
         try:
             os.makedirs(folder, exist_ok=True)
-            probe = os.path.join(folder, ".test_ecriture")
+            probe = os.path.join(folder, ".write_test")
             with open(probe, "w") as fh:
                 fh.write("ok")
             os.remove(probe)
         except OSError as e:
-            messagebox.showerror("Dossier inaccessible", f"Impossible d'écrire dans :\n{folder}\n\n{e}")
+            messagebox.showerror("Folder not writable", f"Cannot write to:\n{folder}\n\n{e}")
             return
 
         recent = [base] + [d for d in self.cfg["recent_folders"] if not same_path(d, base)]
@@ -334,19 +538,19 @@ class CaptureApp:
 
         self.count = 0
         self.next_capture = None
-        # Nouvel evenement a chaque session : un Stop suivi d'un Play immediat
-        # ne peut pas reveiller l'ancien thread de capture.
+        # New event for every session: a stop followed by an immediate play
+        # cannot wake up the previous capture thread.
         self.stop_event = threading.Event()
         self.run_event.set()
         self.state = "running"
-        self.detail.set(f"Dossier : {session}")
+        self.detail.set(f"// folder: {session}")
         self.worker = threading.Thread(
             target=self.loop,
             args=(self.cb_mon.current(), seconds, self.fmt.get(), folder, self.stop_event,
                   start_delay),
             daemon=True)
         self.worker.start()
-        log.info("Session demarree : ecran %s, %s s, %s, %s",
+        log.info("Session started: screen %s, %s s, %s, %s",
                  self.cb_mon.current() + 1, seconds, self.fmt.get(), folder)
         self.refresh_ui()
 
@@ -357,12 +561,12 @@ class CaptureApp:
 
     def stop(self):
         if self.state != "stopped":
-            log.info("Session arretee apres %s capture(s)", self.count)
+            log.info("Session stopped after %s capture(s)", self.count)
         self.stop_event.set()
-        self.run_event.set()   # debloque le thread s'il etait en pause
+        self.run_event.set()   # unblock the thread if it was paused
         self.state = "stopped"
         self.next_capture = None
-        self.status.set(f"Arrêté — {self.count} capture(s) enregistrée(s)")
+        self.status.set(f"stopped · {plural(self.count, 'capture')} saved")
         self.refresh_ui()
 
     def poll(self):
@@ -372,56 +576,56 @@ class CaptureApp:
             except queue.Empty:
                 break
             if kind == "ok":
-                self.detail.set(f"Dernière : {os.path.basename(data)}")
+                self.detail.set(f"// last: {os.path.basename(data)}")
             elif kind == "err":
-                self.detail.set(f"Erreur : {data}")
+                self.detail.set(f"// error: {data}")
             elif kind == "fatal":
                 self.stop()
-                messagebox.showerror("Capture arrêtée", data)
+                messagebox.showerror("Capture stopped", data)
 
         if self.state == "running":
-            text = f"En cours — {self.count} capture(s)"
+            text = f"recording · {plural(self.count, 'capture')}"
             if self.next_capture is not None:
-                text += f" — prochaine dans {fmt_duration(self.next_capture - time.monotonic())}"
+                text += f" · next in {fmt_duration(self.next_capture - time.monotonic())}"
             self.status.set(text)
         elif self.state == "paused":
-            self.status.set(f"En pause — {self.count} capture(s)")
+            self.status.set(f"paused · {plural(self.count, 'capture')}")
         self.root.after(250, self.poll)
 
     def on_tk_error(self, exc, val, tb):
-        log.error("Erreur interface", exc_info=(exc, val, tb))
-        messagebox.showerror("Erreur", f"{val}\n\nDétails : logs\\screencap.log")
+        log.error("Interface error", exc_info=(exc, val, tb))
+        messagebox.showerror("Error", f"{val}\n\nDetails: logs\\screencap.log")
 
     def on_close(self):
         self.stop()
         if self.worker is not None:
-            self.worker.join(timeout=3)   # laisse finir une ecriture en cours
+            self.worker.join(timeout=3)   # let a write in progress finish
         self.cfg.update(self.current_settings())
         save_config(self.cfg)
         self.root.destroy()
 
-    # ---------- capture (thread separe) ----------
+    # ---------- capture (separate thread) ----------
     def loop(self, mon_index, interval, fmt, folder, stop_event, start_delay):
         try:
             self.capture_loop(mon_index, interval, fmt, folder, stop_event, start_delay)
-        except Exception as e:   # sinon le thread meurt et l'interface reste "En cours"
-            log.error("Thread de capture interrompu", exc_info=True)
+        except Exception as e:   # otherwise the thread dies and the interface stays on "recording"
+            log.error("Capture thread interrupted", exc_info=True)
             if not stop_event.is_set():
-                self.msgs.put(("fatal", f"Capture interrompue.\n\n{e}"))
+                self.msgs.put(("fatal", f"Capture interrupted.\n\n{e}"))
 
     def capture_loop(self, mon_index, interval, fmt, folder, stop_event, start_delay):
         errors = 0
         with MSS() as sct:
             if mon_index + 1 >= len(sct.monitors):
-                self.msgs.put(("fatal", "Cet écran n'est plus détecté. Clique sur ↻ Écrans."))
+                self.msgs.put(("fatal", "This screen is no longer detected. Click ↻ refresh."))
                 return
             mon = sct.monitors[mon_index + 1]
-            next_t = time.monotonic() + start_delay   # 1re capture : tout de suite, ou apres Identifier
+            next_t = time.monotonic() + start_delay   # 1st capture: right away, or after identify
             while not stop_event.is_set():
-                if not self.run_event.is_set():  # en pause
+                if not self.run_event.is_set():  # paused
                     self.next_capture = None
                     self.run_event.wait(0.2)
-                    next_t = time.monotonic()    # capture des la reprise
+                    next_t = time.monotonic()    # capture as soon as it resumes
                     continue
                 now = time.monotonic()
                 self.next_capture = next_t
@@ -436,7 +640,7 @@ class CaptureApp:
                     ext = ".png" if fmt == "PNG" else ".jpg"
                     path = os.path.join(folder, f"{stamp}_{self.count + 1:05d}{ext}")
                     if fmt == "PNG":
-                        img.save(path, compress_level=1)   # compression rapide
+                        img.save(path, compress_level=1)   # fast compression
                     else:
                         img.save(path, quality=90)
                     self.count += 1
@@ -444,21 +648,21 @@ class CaptureApp:
                     self.msgs.put(("ok", path))
                 except Exception as e:
                     errors += 1
-                    log.error("Echec de capture", exc_info=True)
+                    log.error("Capture failed", exc_info=True)
                     self.msgs.put(("err", str(e)))
                     if errors >= MAX_CONSECUTIVE_ERRORS:
-                        self.msgs.put(("fatal", f"{errors} échecs d'affilée, capture arrêtée.\n\n{e}"))
+                        self.msgs.put(("fatal", f"{errors} failures in a row, capture stopped.\n\n{e}"))
                         return
 
 
 def main():
     setup_logging()
     if IMPORT_ERROR is not None:
-        log.error("Dependance manquante : %s", IMPORT_ERROR)
+        log.error("Missing dependency: %s", IMPORT_ERROR)
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror(APP_NAME, f"Dépendance manquante ({IMPORT_ERROR}).\n\n"
-                                       "Lance setup.bat puis réessaie.")
+        messagebox.showerror(APP_NAME, f"Missing dependency ({IMPORT_ERROR}).\n\n"
+                                       "Run setup.bat, then try again.")
         return
     enable_dpi_awareness()
     root = tk.Tk()

@@ -1,64 +1,77 @@
 # aioli-screencap
 
-Capture un écran à intervalle régulier (secondes, minutes ou heures), avec Play / Pause / Stop.
-Pensé pour documenter une session de travail sur un second écran (3ds Max, ComfyUI, Photoshop…)
-sans rien perturber : la capture lit simplement l'image affichée, sans prendre le focus.
+```
+> ai.oli/ screencap
+// periodic screen capture, without taking focus
+```
 
-Windows 10/11, Python 3.9+ (3.12 conseillé, avec tkinter, coché par défaut dans l'installateur python.org).
+Captures one screen at a regular interval (seconds, minutes or hours), with play / pause / stop.
+Made to document a work session on a second screen (3ds Max, ComfyUI, Photoshop…)
+without getting in the way: the capture just reads what is displayed, it never takes the focus.
 
-## Installation
+Windows 10/11, Python 3.9+ (3.12 recommended, with tkinter, ticked by default in the python.org installer).
 
-1. Place le dossier où tu veux.
-2. Double-clic sur `setup.bat` (pas en administrateur).
+## Install
 
-Le script crée un environnement isolé `.venv\` dans le dossier et y installe `mss` et `Pillow`.
+**A. With git** (easiest to update later):
 
-## Utilisation
+```
+git clone https://github.com/aiolicollective/aioli-screencap.git
+```
 
-Double-clic sur `screencap.bat`. Choisis l'écran, le dossier, l'intervalle et son unité, le format, puis ▶ Play.
+To update: `git pull` in the folder. Your settings (`config.json`) are not touched.
 
-- **Identifier** : affiche 2 secondes le numéro de chaque écran en son centre (l'écran choisi en blanc). Ces numéros sont ceux de l'outil, pas forcément ceux des paramètres d'affichage de Windows.
-- **Dossier** : n'importe quel dossier, via Parcourir… ou en tapant le chemin. Les 8 derniers utilisés sont proposés dans la liste déroulante.
-- **Nom de session** (optionnel) : le sous-dossier s'appelle alors `NomDeSession_AAAA-MM-JJ_HH-MM-SS`.
+**B. Without git**: *Code → Download ZIP* on GitHub, then unzip wherever you like.
 
-- **Pause** suspend la session ; **Play** la reprend avec une capture immédiate.
-- **Stop** termine la session.
-- Sans nom, chaque session crée un sous-dossier `session_AAAA-MM-JJ_HH-MM-SS`.
-- Les réglages sont mémorisés dans `config.json`.
-- En cas de souci, lance `screencap.bat debug` ou regarde `logs\screencap.log`.
+Then double-click `setup.bat` (not as administrator).
+It creates an isolated environment, `.venv\`, in the folder and installs `mss` and `Pillow` into it.
 
-## Ce qui est écrit, et où
+## Use
 
-| Quoi | Où |
+Double-click `screencap.bat`. Pick the screen, the folder, the interval and its unit, the format, then **▶ play**.
+
+- **identify**: shows each screen's number at its centre for 2 seconds (the chosen screen in white). These are the tool's numbers, not necessarily the ones in Windows display settings.
+- **↻ refresh**: reads the screens again, after plugging in or unplugging one.
+- **folder**: any folder, through *browse…* or by typing the path. The last 8 folders used are in the drop-down list.
+- **session** (optional): the subfolder is then named `SessionName_YYYY-MM-DD_HH-MM-SS`. Without a name, `session_YYYY-MM-DD_HH-MM-SS`.
+- **pause** suspends the session; **play** resumes it with an immediate capture.
+- **stop** ends the session.
+- Settings are remembered in `config.json`.
+- If something goes wrong, run `screencap.bat debug` or read `logs\screencap.log`.
+
+## What is written, and where
+
+| What | Where |
 | --- | --- |
-| Python + dépendances | `.venv\` dans ce dossier |
-| Réglages et dossiers récents | `config.json` dans ce dossier |
-| Journal d'erreurs | `logs\` dans ce dossier (1 Mo max × 3) |
-| Captures | le dossier que tu choisis (par défaut `%USERPROFILE%\Pictures\Captures`, affiché « Images » dans l'Explorateur) |
+| Python + dependencies | `.venv\` in this folder |
+| Settings and recent folders | `config.json` in this folder |
+| Error log | `logs\` in this folder (1 MB max × 3) |
+| Captures | the folder you pick (default `%USERPROFILE%\Pictures\Captures`) |
 
-Rien d'autre : pas de pip global, pas de cache pip, pas de registre, pas de raccourci.
-Le programme ne fait aucune connexion réseau ; seul `setup.bat` télécharge les dépendances depuis PyPI.
+Nothing else: no global pip, no pip cache, no registry, no shortcut.
+The program makes no network connection; only `setup.bat` downloads the dependencies from PyPI.
 
-## Désinstaller
+## Uninstall
 
-Supprime le dossier. Les captures restent, puisqu'elles sont ailleurs.
+Delete the folder. Your captures stay, since they live elsewhere.
 
-## Choix de sécurité de setup.bat
+## Security choices in setup.bat
 
-- Il se place toujours dans son propre dossier : même lancé depuis ailleurs, le venv ne peut pas atterrir ailleurs.
-- Il refuse les droits administrateur.
-- Il utilise le chemin réel de `python.exe` et ignore l'alias du Microsoft Store.
-- pip est appelé via le Python du venv, avec les options suivantes :
-  - `--require-virtualenv` : pip refuse de toucher au Python système.
-  - `--isolated` : pip ignore ta config pip et tes variables d'environnement.
-  - `--no-cache-dir` : pip n'écrit pas de cache dans `%LOCALAPPDATA%`.
-  - `--only-binary=:all:` : aucun code de compilation n'est exécuté.
-- Il vérifie les imports à la fin de l'installation.
+- It always works in its own folder: even when started from somewhere else, the venv cannot land elsewhere.
+- It refuses administrator rights.
+- It uses the real path of `python.exe` and ignores the Microsoft Store alias.
+- pip is called through the venv's Python, with these options:
+  - `--require-virtualenv`: pip refuses to touch the system Python.
+  - `--isolated`: pip ignores your pip config and environment variables.
+  - `--no-cache-dir`: pip writes no cache to `%LOCALAPPDATA%`.
+  - `--only-binary=:all:`: no build code is ever run.
+- It checks the imports at the end of the install.
 
 ## Licence
 
-MIT, pour notre code seulement — voir `LICENSE`. Python, `mss` et `Pillow` gardent leurs propres licences.
+MIT, for our code only — see `LICENSE`. Python, `mss` and `Pillow` keep their own licences.
 
 ---
 
-ai.oli collective — victor.oli with ai.claude, 2026.
+[aiolicollective.com](https://aiolicollective.com) · hybrid collective of artists + AI agents, Marseille.
+victor.oli with ai.claude, 2026.

@@ -1,6 +1,6 @@
-# Versions minimales, pas de version exacte : pip prend le paquet
-# precompile le plus recent compatible avec ton Python.
-# setup.bat installe avec --only-binary=:all: : rien n'est jamais
-# compile sur ta machine (pas de code de build execute).
+# Minimum versions, no exact pin: pip picks the most recent
+# prebuilt package that matches your Python.
+# setup.bat installs with --only-binary=:all: : nothing is ever
+# compiled on your machine (no build code runs).
 mss>=9.0
 Pillow>=10.3

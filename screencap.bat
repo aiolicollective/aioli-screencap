@@ -1,15 +1,15 @@
 @echo off
 setlocal EnableExtensions
 :: ============================================================
-::  screencap.bat  --  aioli-screencap : lanceur
-::  Double-clic : ouvre l'interface sans console.
-::  "screencap.bat debug" : avec console, pour voir les erreurs.
+::  screencap.bat  --  aioli-screencap: launcher
+::  Double-click: opens the interface without a console.
+::  "screencap.bat debug": with a console, to see errors.
 :: ============================================================
 cd /d "%~dp0" || exit /b 1
 
 if not exist ".venv\Scripts\pythonw.exe" (
     echo.
-    echo  [!] Environnement absent : lance d'abord setup.bat.
+    echo  [!] Environment missing: run setup.bat first.
     echo.
     pause
     exit /b 1
