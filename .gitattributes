@@ -1,0 +1,4 @@
+# Texte normalise en LF dans le depot.
+* text=auto eol=lf
+# Les .bat restent en CRLF : cmd.exe lit mal les labels (goto / call :label) en LF.
+*.bat text eol=crlf
