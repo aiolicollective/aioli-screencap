@@ -17,6 +17,7 @@ Le script crée un environnement isolé `.venv\` dans le dossier et y installe `
 
 Double-clic sur `screencap.bat`. Choisis l'écran, le dossier, l'intervalle et son unité, le format, puis ▶ Play.
 
+- **Identifier** : affiche 2 secondes le numéro de chaque écran en son centre (l'écran choisi en blanc). Ces numéros sont ceux de l'outil, pas forcément ceux des paramètres d'affichage de Windows.
 - **Dossier** : n'importe quel dossier, via Parcourir… ou en tapant le chemin. Les 8 derniers utilisés sont proposés dans la liste déroulante.
 - **Nom de session** (optionnel) : le sous-dossier s'appelle alors `NomDeSession_AAAA-MM-JJ_HH-MM-SS`.
 

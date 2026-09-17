@@ -23,6 +23,8 @@ from tkinter import ttk, filedialog, messagebox
 try:
     import mss
     from PIL import Image
+    # mss >= 10.2 : mss.MSS ; mss.mss() est deprecie et disparaitra.
+    MSS = getattr(mss, "MSS", None) or mss.mss
     IMPORT_ERROR = None
 except ImportError as e:  # venv absent ou incomplet
     IMPORT_ERROR = e
@@ -37,6 +39,7 @@ MIN_INTERVAL = 1              # secondes
 MAX_INTERVAL = 24 * 3600      # 24 h
 MAX_CONSECUTIVE_ERRORS = 5    # ex. disque plein : on arrete proprement
 MAX_RECENT = 8                # dossiers recents memorises
+IDENTIFY_MS = 2000            # duree d'affichage des numeros d'ecran
 
 log = logging.getLogger(APP_NAME)
 
@@ -142,6 +145,8 @@ class CaptureApp:
         self.count = 0
         self.next_capture = None
         self.monitors = []
+        self.overlays = []                    # fenetres "Identifier" ouvertes
+        self.overlay_timer = None
 
         self.folder = tk.StringVar(value=self.cfg["folder"])
         self.interval = tk.StringVar(value=self.cfg["interval"])
@@ -158,8 +163,12 @@ class CaptureApp:
         ttk.Label(f, text="Écran :").grid(row=0, column=0, sticky="w", **pad)
         self.cb_mon = ttk.Combobox(f, state="readonly", width=38)
         self.cb_mon.grid(row=0, column=1, sticky="w", **pad)
-        self.b_refresh = ttk.Button(f, text="↻ Écrans", command=self.load_monitors)
-        self.b_refresh.grid(row=0, column=2, **pad)
+        mon_btns = ttk.Frame(f)
+        mon_btns.grid(row=0, column=2, sticky="w", **pad)
+        self.b_refresh = ttk.Button(mon_btns, text="↻ Écrans", command=self.load_monitors)
+        self.b_refresh.grid(row=0, column=0)
+        self.b_identify = ttk.Button(mon_btns, text="Identifier", command=self.identify)
+        self.b_identify.grid(row=0, column=1, padx=(6, 0))
 
         ttk.Label(f, text="Dossier :").grid(row=1, column=0, sticky="w", **pad)
         # Liste deroulante des dossiers recents, mais on peut aussi taper un chemin
@@ -200,7 +209,7 @@ class CaptureApp:
         ttk.Label(f, textvariable=self.detail, foreground="gray").grid(
             row=7, column=0, columnspan=3, sticky="w", **pad)
 
-        self.settings = [self.cb_mon, self.b_refresh, self.e_folder, self.b_browse,
+        self.settings = [self.cb_mon, self.b_refresh, self.b_identify, self.e_folder, self.b_browse,
                          self.e_name, self.e_int, self.cb_unit, self.cb_fmt]
         self.load_monitors()
         self.refresh_ui()
@@ -209,13 +218,50 @@ class CaptureApp:
 
     # ---------- interface ----------
     def load_monitors(self):
-        with mss.mss() as sct:
+        with MSS() as sct:
             self.monitors = sct.monitors[1:]   # [0] = tous les ecrans reunis
         labels = [f"Écran {i + 1} — {m['width']}x{m['height']} (position {m['left']},{m['top']})"
                   for i, m in enumerate(self.monitors)]
+        # On garde l'ecran deja choisi ; au demarrage, celui des reglages.
+        wanted = self.cb_mon.current() + 1 if self.cb_mon.current() >= 0 else self.cfg.get("monitor", 2)
         self.cb_mon.configure(values=labels)
-        wanted = self.cfg.get("monitor", 2)
         self.cb_mon.current(min(max(wanted, 1), len(labels)) - 1)
+
+    def identify(self):
+        """Affiche le numero de chaque ecran en son centre, IDENTIFY_MS millisecondes."""
+        self.close_overlays()
+        chosen = self.cb_mon.current()
+        for i, m in enumerate(self.monitors):
+            size = max(120, min(m["width"], m["height"]) // 3)
+            x = m["left"] + (m["width"] - size) // 2
+            y = m["top"] + (m["height"] - size) // 2
+            color = "#ffffff" if i == chosen else "#8c8c8c"   # l'ecran choisi en blanc
+            w = tk.Toplevel(self.root)
+            w.overrideredirect(True)            # pas de barre de titre
+            w.attributes("-topmost", True)
+            w.configure(background="#000000", highlightthickness=4, highlightbackground=color)
+            w.geometry(f"{size}x{size}+{x}+{y}")
+            lbl = tk.Label(w, text=str(i + 1), fg=color, bg="#000000",
+                           font=("Segoe UI", -int(size * 0.6), "bold"))
+            lbl.place(relx=0.5, rely=0.5, anchor="center")
+            for widget in (w, lbl):
+                widget.bind("<Button-1>", lambda e: self.close_overlays())
+            self.overlays.append(w)
+        self.overlay_timer = self.root.after(IDENTIFY_MS, self.close_overlays)
+
+    def close_overlays(self):
+        """Ferme les numeros d'ecran. Renvoie True s'il y en avait d'affiches."""
+        was_open = bool(self.overlays)
+        if self.overlay_timer is not None:
+            self.root.after_cancel(self.overlay_timer)
+            self.overlay_timer = None
+        for w in self.overlays:
+            try:
+                w.destroy()
+            except tk.TclError:   # deja fermee
+                pass
+        self.overlays = []
+        return was_open
 
     def browse(self):
         d = filedialog.askdirectory(initialdir=self.folder.get() or os.path.expanduser("~"))
@@ -242,6 +288,9 @@ class CaptureApp:
         self.b_stop.configure(state="disabled" if stopped else "normal")
 
     def play(self):
+        # Jamais de numero sur une capture : s'il y en avait, on laisse
+        # a l'ecran le temps de se redessiner avant la premiere image.
+        start_delay = 0.5 if self.close_overlays() else 0.0
         if self.state == "paused":
             self.state = "running"
             self.run_event.set()
@@ -293,7 +342,8 @@ class CaptureApp:
         self.detail.set(f"Dossier : {session}")
         self.worker = threading.Thread(
             target=self.loop,
-            args=(self.cb_mon.current(), seconds, self.fmt.get(), folder, self.stop_event),
+            args=(self.cb_mon.current(), seconds, self.fmt.get(), folder, self.stop_event,
+                  start_delay),
             daemon=True)
         self.worker.start()
         log.info("Session demarree : ecran %s, %s s, %s, %s",
@@ -351,22 +401,22 @@ class CaptureApp:
         self.root.destroy()
 
     # ---------- capture (thread separe) ----------
-    def loop(self, mon_index, interval, fmt, folder, stop_event):
+    def loop(self, mon_index, interval, fmt, folder, stop_event, start_delay):
         try:
-            self.capture_loop(mon_index, interval, fmt, folder, stop_event)
+            self.capture_loop(mon_index, interval, fmt, folder, stop_event, start_delay)
         except Exception as e:   # sinon le thread meurt et l'interface reste "En cours"
             log.error("Thread de capture interrompu", exc_info=True)
             if not stop_event.is_set():
                 self.msgs.put(("fatal", f"Capture interrompue.\n\n{e}"))
 
-    def capture_loop(self, mon_index, interval, fmt, folder, stop_event):
+    def capture_loop(self, mon_index, interval, fmt, folder, stop_event, start_delay):
         errors = 0
-        with mss.mss() as sct:
+        with MSS() as sct:
             if mon_index + 1 >= len(sct.monitors):
                 self.msgs.put(("fatal", "Cet écran n'est plus détecté. Clique sur ↻ Écrans."))
                 return
             mon = sct.monitors[mon_index + 1]
-            next_t = time.monotonic()           # premiere capture immediate
+            next_t = time.monotonic() + start_delay   # 1re capture : tout de suite, ou apres Identifier
             while not stop_event.is_set():
                 if not self.run_event.is_set():  # en pause
                     self.next_capture = None
