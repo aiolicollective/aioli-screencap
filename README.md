@@ -36,6 +36,7 @@ Double-click `screencap.bat`. Pick the screen, the folder, the interval and its 
 - **session** (optional): the subfolder is then named `SessionName_YYYY-MM-DD_HH-MM-SS`. Without a name, `session_YYYY-MM-DD_HH-MM-SS`.
 - **pause** suspends the session; **play** resumes it with an immediate capture.
 - **stop** ends the session.
+- **snap** (while recording or paused): one extra capture right now, named `…_snap`. The schedule does not move, and a paused session stays paused.
 - **invert palette** (top right): switches between the light and the dark interface. The choice is remembered.
 - Settings are remembered in `config.json`.
 - If something goes wrong, run `screencap.bat debug` or read `logs\screencap.log`.

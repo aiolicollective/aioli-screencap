@@ -31,7 +31,7 @@ except ImportError as e:  # venv missing or incomplete
     IMPORT_ERROR = e
 
 APP_NAME = "aioli-screencap"
-VERSION = "1.2"
+VERSION = "1.3"
 SITE = "aiolicollective.com"
 REPO = "github.com/aiolicollective/aioli-screencap"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -265,6 +265,7 @@ class CaptureApp:
         self.set_icon()
         self.run_event = threading.Event()    # set = capturing
         self.stop_event = threading.Event()   # set = end of session
+        self.snap_event = threading.Event()   # set = "snap" asked for one capture now
         self.msgs = queue.Queue()             # capture thread -> interface
         self.worker = None
         self.state = "stopped"
@@ -377,7 +378,9 @@ class CaptureApp:
         self.b_play = FlatButton(btns, "▶ play", self.play, f_bold, primary=True, padx=16, pady=5)
         self.b_pause = FlatButton(btns, "❚❚ pause", self.pause, f_bold, padx=16, pady=5)
         self.b_stop = FlatButton(btns, "■ stop", self.stop, f_bold, padx=16, pady=5)
-        for i, b in enumerate((self.b_play, self.b_pause, self.b_stop)):
+        # one capture right now, while recording or paused
+        self.b_snap = FlatButton(btns, "◉ snap", self.snap, f_bold, padx=16, pady=5)
+        for i, b in enumerate((self.b_play, self.b_pause, self.b_stop, self.b_snap)):
             b.grid(row=0, column=i, padx=(0 if i == 0 else px(8), 0))
 
         # status: "> stopped" / "● recording · ..."
@@ -581,6 +584,7 @@ class CaptureApp:
         self.b_play.set_enabled(self.state != "running")
         self.b_pause.set_enabled(self.state == "running")
         self.b_stop.set_enabled(not stopped)
+        self.b_snap.set_enabled(not stopped)
         if self.state == "running":
             self.l_prompt.configure(text="●", fg=C["rec"])
         elif self.state == "paused":
@@ -638,6 +642,7 @@ class CaptureApp:
         # New event for every session: a stop followed by an immediate play
         # cannot wake up the previous capture thread.
         self.stop_event = threading.Event()
+        self.snap_event.clear()
         self.run_event.set()
         self.state = "running"
         self.detail.set(f"// folder: {session}")
@@ -650,6 +655,11 @@ class CaptureApp:
         log.info("Session started: screen %s, %s s, %s, %s",
                  self.cb_mon.current() + 1, seconds, self.fmt.get(), folder)
         self.refresh_ui()
+
+    def snap(self):
+        """One extra capture now, in the session folder. The schedule does not move."""
+        if self.state != "stopped":
+            self.snap_event.set()
 
     def pause(self):
         self.run_event.clear()
@@ -674,6 +684,8 @@ class CaptureApp:
                 break
             if kind == "ok":
                 self.detail.set(f"// last: {os.path.basename(data)}")
+            elif kind == "snap":
+                self.detail.set(f"// snap: {os.path.basename(data)}")
             elif kind == "err":
                 self.detail.set(f"// error: {data}")
             elif kind == "fatal":
@@ -719,30 +731,25 @@ class CaptureApp:
             mon = sct.monitors[mon_index + 1]
             next_t = time.monotonic() + start_delay   # 1st capture: right away, or after identify
             while not stop_event.is_set():
-                if not self.run_event.is_set():  # paused
+                if self.snap_event.is_set():     # "snap": one capture now, schedule unchanged
+                    self.snap_event.clear()
+                    tag = "snap"
+                elif not self.run_event.is_set():  # paused
                     self.next_capture = None
-                    self.run_event.wait(0.2)
+                    self.run_event.wait(0.1)
                     next_t = time.monotonic()    # capture as soon as it resumes
                     continue
-                now = time.monotonic()
-                self.next_capture = next_t
-                if now < next_t:
-                    stop_event.wait(min(next_t - now, 0.2))
-                    continue
-                next_t = max(next_t + interval, now)
+                else:
+                    now = time.monotonic()
+                    self.next_capture = next_t
+                    if now < next_t:
+                        stop_event.wait(min(next_t - now, 0.1))
+                        continue
+                    next_t = max(next_t + interval, now)
+                    tag = ""
                 try:
-                    shot = sct.grab(mon)
-                    img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-                    stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                    ext = ".png" if fmt == "PNG" else ".jpg"
-                    path = os.path.join(folder, f"{stamp}_{self.count + 1:05d}{ext}")
-                    if fmt == "PNG":
-                        img.save(path, compress_level=1)   # fast compression
-                    else:
-                        img.save(path, quality=90)
-                    self.count += 1
+                    self.save_capture(sct, mon, fmt, folder, tag)
                     errors = 0
-                    self.msgs.put(("ok", path))
                 except Exception as e:
                     errors += 1
                     log.error("Capture failed", exc_info=True)
@@ -750,6 +757,21 @@ class CaptureApp:
                     if errors >= MAX_CONSECUTIVE_ERRORS:
                         self.msgs.put(("fatal", f"{errors} failures in a row, capture stopped.\n\n{e}"))
                         return
+
+    def save_capture(self, sct, mon, fmt, folder, tag):
+        """Grabs the screen and writes one numbered file; a snap gets a _snap suffix."""
+        shot = sct.grab(mon)
+        img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        ext = ".png" if fmt == "PNG" else ".jpg"
+        suffix = f"_{tag}" if tag else ""
+        path = os.path.join(folder, f"{stamp}_{self.count + 1:05d}{suffix}{ext}")
+        if fmt == "PNG":
+            img.save(path, compress_level=1)   # fast compression
+        else:
+            img.save(path, quality=90)
+        self.count += 1
+        self.msgs.put(("snap" if tag else "ok", path))
 
 
 def main():
