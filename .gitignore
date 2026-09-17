@@ -1,0 +1,8 @@
+# environnement
+.venv/
+__pycache__/
+
+# donnees locales
+config.json
+config.json.tmp
+logs/
