@@ -31,7 +31,7 @@ except ImportError as e:  # venv missing or incomplete
     IMPORT_ERROR = e
 
 APP_NAME = "aioli-screencap"
-VERSION = "1.1"
+VERSION = "1.2"
 SITE = "aiolicollective.com"
 REPO = "github.com/aiolicollective/aioli-screencap"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -50,13 +50,20 @@ MAX_RECENT = 8                # recent folders remembered
 IDENTIFY_MS = 2000            # how long the screen numbers stay up
 
 # Look: the collective's logo, "> ai.oli/", a terminal prompt in black on white.
-BG = "#ffffff"
-FG = "#111111"
-DIM = "#8a8a8a"
-LINE = "#d4d4d4"
-HOVER = "#efefef"
-HOVER_DARK = "#3a3a3a"
-REC = "#d8402b"               # the only colour: the recording dot
+# "invert palette" swaps to the dark version. Within a palette every value is
+# unique: switching maps each colour to the one with the same role.
+PALETTES = {
+    "light": {"bg": "#ffffff", "fg": "#111111", "dim": "#8a8a8a", "line": "#d4d4d4",
+              "hover": "#efefef", "hover_strong": "#3a3a3a",
+              "rec": "#d8402b"},   # the only colour: the recording dot
+    "dark":  {"bg": "#111111", "fg": "#f2f2f2", "dim": "#8f8f8f", "line": "#363636",
+              "hover": "#242424", "hover_strong": "#cfcfcf",
+              "rec": "#ff5a42"},
+}
+C = dict(PALETTES["light"])   # current palette, read at paint time
+COLOR_OPTIONS = ("bg", "fg", "highlightbackground", "highlightcolor", "insertbackground",
+                 "selectbackground", "selectforeground", "disabledbackground",
+                 "disabledforeground", "activebackground", "activeforeground")
 MONO_FAMILIES = ("Cascadia Mono", "JetBrains Mono", "Consolas",
                  "DejaVu Sans Mono", "Courier New")
 
@@ -99,6 +106,7 @@ def load_config():
         "monitor": 2,
         "session_name": "",
         "recent_folders": [],
+        "theme": "light",
     }
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
@@ -117,6 +125,8 @@ def load_config():
         cfg["unit"] = "min"
     if cfg["format"] not in FORMATS:
         cfg["format"] = "JPG"
+    if cfg["theme"] not in PALETTES:
+        cfg["theme"] = "light"
     return cfg
 
 
@@ -161,19 +171,19 @@ def pick_mono(root):
 
 
 def make_icon(root):
-    """Window icon: the '>' of the logo, black on white. Drawn here, no file needed."""
+    """Window icon: the '>' of the logo, in the current palette. Drawn here, no file needed."""
     size, stroke = 32, 4
     img = tk.PhotoImage(master=root, width=size, height=size)
-    img.put(BG, to=(0, 0, size, size))
+    img.put(C["bg"], to=(0, 0, size, size))
     for i in range(11):
-        img.put(FG, to=(7 + i, 5 + i, 7 + i + stroke, 5 + i + stroke))     # upper stroke
-        img.put(FG, to=(7 + i, 23 - i, 7 + i + stroke, 23 - i + stroke))   # lower stroke
+        img.put(C["fg"], to=(7 + i, 5 + i, 7 + i + stroke, 5 + i + stroke))     # upper stroke
+        img.put(C["fg"], to=(7 + i, 23 - i, 7 + i + stroke, 23 - i + stroke))   # lower stroke
     return img
 
 
 # ------------------------------------------------------------------ widgets
 class FlatButton(tk.Label):
-    """Flat button with a thin black outline. A Label, so it looks the same on every system."""
+    """Flat button with a thin outline. A Label, so it looks the same on every system."""
 
     def __init__(self, parent, text, command, font, primary=False, padx=10, pady=3):
         super().__init__(parent, text=text, font=font, padx=padx, pady=pady,
@@ -209,11 +219,12 @@ class FlatButton(tk.Label):
     def _paint(self):
         if not self.enabled:
             # a selected option stays readable while a session runs
-            bg, fg, border = (LINE, BG, LINE) if self.selected else (BG, LINE, LINE)
+            bg, fg, border = ((C["dim"], C["bg"], C["dim"]) if self.selected
+                              else (C["bg"], C["line"], C["line"]))
         elif self.primary or self.selected:
-            bg, fg, border = (HOVER_DARK if self.hover else FG), BG, FG
+            bg, fg, border = (C["hover_strong"] if self.hover else C["fg"]), C["bg"], C["fg"]
         else:
-            bg, fg, border = (HOVER if self.hover else BG), FG, FG
+            bg, fg, border = (C["hover"] if self.hover else C["bg"]), C["fg"], C["fg"]
         self.configure(bg=bg, fg=fg, highlightbackground=border, highlightcolor=border)
 
 
@@ -221,7 +232,7 @@ class Toggle(tk.Frame):
     """Row of FlatButtons, one selected: [sec] [min] [h]."""
 
     def __init__(self, parent, options, variable, font, gap):
-        super().__init__(parent, bg=BG)
+        super().__init__(parent, bg=C["bg"])
         self.variable = variable
         self.buttons = {}
         for i, (value, label) in enumerate(options):
@@ -246,15 +257,12 @@ class CaptureApp:
         self.root = root
         root.title(APP_NAME)
         root.resizable(False, False)
-        root.configure(bg=BG)
         root.report_callback_exception = self.on_tk_error
-        try:
-            self.icon = make_icon(root)
-            root.iconphoto(True, self.icon)
-        except tk.TclError:
-            pass
-
         self.cfg = load_config()
+        self.theme = self.cfg["theme"]
+        C.update(PALETTES[self.theme])      # before any widget is created
+        root.configure(bg=C["bg"])
+        self.set_icon()
         self.run_event = threading.Event()    # set = capturing
         self.stop_event = threading.Event()   # set = end of session
         self.msgs = queue.Queue()             # capture thread -> interface
@@ -282,30 +290,43 @@ class CaptureApp:
         f_small = (self.mono, 9)
         f_title = (self.mono, 15, "bold")
         f_bold = (self.mono, 10, "bold")
+        self.f_base = f_base
         self.setup_styles(f_base)
 
-        f = tk.Frame(root, bg=BG, padx=px(18), pady=px(14))
+        f = tk.Frame(root, bg=C["bg"], padx=px(18), pady=px(14))
         f.grid()
         f.columnconfigure(1, weight=1)
         row_pad = {"pady": px(4)}
 
         def label(text, row):
-            tk.Label(f, text=text, font=f_base, bg=BG, fg=DIM).grid(
+            tk.Label(f, text=text, font=f_base, bg=C["bg"], fg=C["dim"]).grid(
                 row=row, column=0, sticky="w", padx=(0, px(14)), **row_pad)
 
         def rule(row):
-            tk.Frame(f, height=1, bg=LINE).grid(row=row, column=0, columnspan=3,
-                                                sticky="ew", pady=px(10))
+            tk.Frame(f, height=1, bg=C["line"]).grid(row=row, column=0, columnspan=3,
+                                                     sticky="ew", pady=px(10))
 
         # header: "> ai.oli/ screencap"
-        head = tk.Frame(f, bg=BG)
+        head = tk.Frame(f, bg=C["bg"])
         head.grid(row=0, column=0, columnspan=3, sticky="ew")
         head.columnconfigure(1, weight=1)
-        tk.Label(head, text="> ai.oli/", font=f_title, bg=BG, fg=FG).grid(row=0, column=0, sticky="w")
-        tk.Label(head, text=" screencap", font=f_title, bg=BG, fg=DIM).grid(row=0, column=1, sticky="w")
-        tk.Label(head, text=f"v{VERSION}", font=f_small, bg=BG, fg=DIM).grid(row=0, column=2, sticky="e")
+        tk.Label(head, text="> ai.oli/", font=f_title, bg=C["bg"], fg=C["fg"]).grid(row=0, column=0, sticky="w")
+        tk.Label(head, text=" screencap", font=f_title, bg=C["bg"], fg=C["dim"]).grid(row=0, column=1, sticky="w")
+        head_right = tk.Frame(head, bg=C["bg"])
+        head_right.grid(row=0, column=2, sticky="e")
+        # discreet link: light <-> dark
+        self.l_theme = tk.Label(head_right, text="invert palette", font=f_small,
+                                bg=C["bg"], fg=C["dim"], cursor="hand2")
+        self.l_theme.grid(row=0, column=0, padx=(0, px(12)))
+        self.l_theme.bind("<Enter>", lambda e: self.l_theme.configure(
+            fg=C["fg"], font=(self.mono, 9, "underline")))
+        self.l_theme.bind("<Leave>", lambda e: self.l_theme.configure(
+            fg=C["dim"], font=f_small))
+        self.l_theme.bind("<ButtonRelease-1>", lambda e: self.toggle_theme())
+        tk.Label(head_right, text=f"v{VERSION}", font=f_small, bg=C["bg"], fg=C["dim"]).grid(
+            row=0, column=1)
         tk.Label(f, text="// periodic screen capture, without taking focus", font=f_small,
-                 bg=BG, fg=DIM).grid(row=1, column=0, columnspan=3, sticky="w")
+                 bg=C["bg"], fg=C["dim"]).grid(row=1, column=0, columnspan=3, sticky="w")
         rule(2)
 
         # screen
@@ -313,7 +334,7 @@ class CaptureApp:
         self.cb_mon = ttk.Combobox(f, state="readonly", width=34, style="Aioli.TCombobox",
                                    font=f_base)
         self.cb_mon.grid(row=3, column=1, sticky="ew", **row_pad)
-        mon_btns = tk.Frame(f, bg=BG)
+        mon_btns = tk.Frame(f, bg=C["bg"])
         mon_btns.grid(row=3, column=2, sticky="w", padx=(px(8), 0))
         self.b_refresh = FlatButton(mon_btns, "↻ refresh", self.load_monitors, f_base)
         self.b_refresh.grid(row=0, column=0)
@@ -332,12 +353,12 @@ class CaptureApp:
         label("session", 5)
         self.e_name = self.entry(f, self.session_name, f_base, width=36)
         self.e_name.grid(row=5, column=1, sticky="ew", **row_pad)
-        tk.Label(f, text="// optional", font=f_small, bg=BG, fg=DIM).grid(
+        tk.Label(f, text="// optional", font=f_small, bg=C["bg"], fg=C["dim"]).grid(
             row=5, column=2, sticky="w", padx=(px(8), 0))
 
         # interval
         label("every", 6)
-        every = tk.Frame(f, bg=BG)
+        every = tk.Frame(f, bg=C["bg"])
         every.grid(row=6, column=1, sticky="w", **row_pad)
         self.e_int = self.entry(every, self.interval, f_base, width=6)
         self.e_int.grid(row=0, column=0, sticky="ns", padx=(0, px(8)))
@@ -351,7 +372,7 @@ class CaptureApp:
         rule(8)
 
         # transport
-        btns = tk.Frame(f, bg=BG)
+        btns = tk.Frame(f, bg=C["bg"])
         btns.grid(row=9, column=0, columnspan=3, sticky="w")
         self.b_play = FlatButton(btns, "▶ play", self.play, f_bold, primary=True, padx=16, pady=5)
         self.b_pause = FlatButton(btns, "❚❚ pause", self.pause, f_bold, padx=16, pady=5)
@@ -360,17 +381,17 @@ class CaptureApp:
             b.grid(row=0, column=i, padx=(0 if i == 0 else px(8), 0))
 
         # status: "> stopped" / "● recording · ..."
-        st = tk.Frame(f, bg=BG)
+        st = tk.Frame(f, bg=C["bg"])
         st.grid(row=10, column=0, columnspan=3, sticky="w", pady=(px(12), 0))
-        self.l_prompt = tk.Label(st, text=">", font=f_bold, bg=BG, fg=FG)
+        self.l_prompt = tk.Label(st, text=">", font=f_bold, bg=C["bg"], fg=C["fg"])
         self.l_prompt.grid(row=0, column=0)
-        tk.Label(st, textvariable=self.status, font=f_base, bg=BG, fg=FG).grid(
+        tk.Label(st, textvariable=self.status, font=f_base, bg=C["bg"], fg=C["fg"]).grid(
             row=0, column=1, padx=(px(6), 0))
-        tk.Label(f, textvariable=self.detail, font=f_small, bg=BG, fg=DIM).grid(
+        tk.Label(f, textvariable=self.detail, font=f_small, bg=C["bg"], fg=C["dim"]).grid(
             row=11, column=0, columnspan=3, sticky="w", pady=(px(2), 0))
         rule(12)
 
-        tk.Label(f, text=f"{SITE}  ·  {REPO}", font=f_small, bg=BG, fg=DIM).grid(
+        tk.Label(f, text=f"{SITE}  ·  {REPO}", font=f_small, bg=C["bg"], fg=C["dim"]).grid(
             row=13, column=0, columnspan=3, sticky="w")
 
         self.settings = [self.cb_mon, self.b_refresh, self.b_identify, self.e_folder,
@@ -378,39 +399,115 @@ class CaptureApp:
         self.load_monitors()
         self.refresh_ui()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.after(50, self.set_titlebar)
         root.after(250, self.poll)
 
     # ---------- look ----------
+    def toggle_theme(self):
+        self.apply_theme("dark" if self.theme == "light" else "light")
+
+    def apply_theme(self, name):
+        """Switches palette on the live window: every colour takes the one with the same role."""
+        self.close_overlays()
+        swap = {value.lower(): PALETTES[name][role] for role, value in C.items()}
+        C.update(PALETTES[name])
+        self.theme = name
+        self.root.configure(bg=C["bg"])
+        self.recolor(self.root, swap)
+        self.setup_styles(self.f_base)
+        for cb in (self.cb_mon, self.e_folder):
+            self.style_popdown(cb)
+        self.refresh_ui()
+        self.set_icon()
+        self.set_titlebar()
+        self.cfg["theme"] = name
+        save_config(self.cfg)
+
+    def recolor(self, widget, swap):
+        for child in widget.winfo_children():
+            if isinstance(child, FlatButton):
+                child._paint()
+            elif not isinstance(child, ttk.Widget):
+                for opt in COLOR_OPTIONS:
+                    try:
+                        value = str(child.cget(opt)).lower()
+                    except tk.TclError:   # option not supported by this widget
+                        continue
+                    if value in swap:
+                        child.configure(**{opt: swap[value]})
+            self.recolor(child, swap)
+
+    def style_popdown(self, combobox):
+        """The drop-down list of a combobox is not a Python widget: coloured through Tcl."""
+        try:
+            popdown = self.root.tk.call("ttk::combobox::PopdownWindow", combobox)
+            self.root.tk.call(f"{popdown}.f.l", "configure",
+                              "-background", C["bg"], "-foreground", C["fg"],
+                              "-selectbackground", C["fg"], "-selectforeground", C["bg"])
+        except tk.TclError:
+            log.warning("Could not colour a drop-down list", exc_info=True)
+
+    def set_icon(self):
+        try:
+            self.icon = make_icon(self.root)
+            self.root.iconphoto(True, self.icon)
+        except tk.TclError:
+            pass
+
+    def set_titlebar(self):
+        """Windows 10/11: dark title bar in dark mode. Silent if not available."""
+        if sys.platform != "win32":
+            return
+        try:
+            self.root.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            value = ctypes.c_int(1 if self.theme == "dark" else 0)
+            # DWMWA_USE_IMMERSIVE_DARK_MODE: 20, or 19 on older Windows 10 builds
+            for attr in (20, 19):
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+                    break
+            # redraw the frame: SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
+        except Exception:
+            log.warning("Could not set the title bar colour", exc_info=True)
+
     def setup_styles(self, font):
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")   # flat theme that respects colours on every system
         except tk.TclError:
             pass
-        style.configure("Aioli.TCombobox", font=font, padding=3, foreground=FG,
-                        fieldbackground=BG, background=BG, bordercolor=LINE,
-                        selectbackground=BG, selectforeground=FG, arrowcolor=FG)
+        # clam draws a 3D edge with light/dark colours: set them to the background, flat.
+        style.configure("Aioli.TCombobox", font=font, padding=3, foreground=C["fg"],
+                        fieldbackground=C["bg"], background=C["bg"], bordercolor=C["line"],
+                        lightcolor=C["bg"], darkcolor=C["bg"], troughcolor=C["bg"],
+                        selectbackground=C["bg"], selectforeground=C["fg"], arrowcolor=C["fg"])
+        # These maps replace the ones inherited from clam (blue field when focused).
         style.map("Aioli.TCombobox",
-                  fieldbackground=[("readonly", BG), ("disabled", BG)],
-                  foreground=[("disabled", DIM)],
-                  bordercolor=[("focus", FG), ("hover", FG)],
-                  selectbackground=[("focus", BG)],
-                  selectforeground=[("focus", FG)])
+                  fieldbackground=[("disabled", C["bg"]), ("readonly", C["bg"])],
+                  foreground=[("disabled", C["dim"]), ("readonly", C["fg"])],
+                  background=[("disabled", C["bg"]), ("pressed", C["hover"]), ("active", C["hover"])],
+                  arrowcolor=[("disabled", C["line"])],
+                  bordercolor=[("disabled", C["line"]), ("focus", C["fg"]), ("hover", C["fg"])],
+                  selectbackground=[("focus", C["bg"])],
+                  selectforeground=[("focus", C["fg"])])
+        style.configure("ComboboxPopdownFrame", bordercolor=C["fg"])
         o = self.root.option_add
         o("*TCombobox*Listbox.font", font)
-        o("*TCombobox*Listbox.background", BG)
-        o("*TCombobox*Listbox.foreground", FG)
-        o("*TCombobox*Listbox.selectBackground", FG)
-        o("*TCombobox*Listbox.selectForeground", BG)
+        o("*TCombobox*Listbox.background", C["bg"])
+        o("*TCombobox*Listbox.foreground", C["fg"])
+        o("*TCombobox*Listbox.selectBackground", C["fg"])
+        o("*TCombobox*Listbox.selectForeground", C["bg"])
         o("*TCombobox*Listbox.borderWidth", 0)
 
     @staticmethod
     def entry(parent, variable, font, width):
         return tk.Entry(parent, textvariable=variable, font=font, width=width,
-                        relief="flat", bd=4, bg=BG, fg=FG, insertbackground=FG,
-                        selectbackground=FG, selectforeground=BG,
-                        disabledbackground=BG, disabledforeground=DIM,
-                        highlightthickness=1, highlightbackground=LINE, highlightcolor=FG)
+                        relief="flat", bd=4, bg=C["bg"], fg=C["fg"], insertbackground=C["fg"],
+                        selectbackground=C["fg"], selectforeground=C["bg"],
+                        disabledbackground=C["bg"], disabledforeground=C["dim"],
+                        highlightthickness=1, highlightbackground=C["line"], highlightcolor=C["fg"])
 
     # ---------- interface ----------
     def load_monitors(self):
@@ -431,13 +528,13 @@ class CaptureApp:
             size = max(120, min(m["width"], m["height"]) // 3)
             x = m["left"] + (m["width"] - size) // 2
             y = m["top"] + (m["height"] - size) // 2
-            color = BG if i == chosen else DIM   # the chosen screen in white
+            color = C["bg"] if i == chosen else C["dim"]   # the chosen screen stands out
             w = tk.Toplevel(self.root)
             w.overrideredirect(True)            # no title bar
             w.attributes("-topmost", True)
-            w.configure(background=FG, highlightthickness=4, highlightbackground=color)
+            w.configure(background=C["fg"], highlightthickness=4, highlightbackground=color)
             w.geometry(f"{size}x{size}+{x}+{y}")
-            lbl = tk.Label(w, text=str(i + 1), fg=color, bg=FG,
+            lbl = tk.Label(w, text=str(i + 1), fg=color, bg=C["fg"],
                            font=(self.mono, -int(size * 0.6), "bold"))
             lbl.place(relx=0.5, rely=0.5, anchor="center")
             for widget in (w, lbl):
@@ -468,7 +565,7 @@ class CaptureApp:
         return {"folder": self.folder.get().strip(), "interval": self.interval.get().strip(),
                 "unit": self.unit.get(), "format": self.fmt.get(),
                 "session_name": self.session_name.get().strip(),
-                "monitor": self.cb_mon.current() + 1}
+                "monitor": self.cb_mon.current() + 1, "theme": self.theme}
 
     def refresh_ui(self):
         stopped = self.state == "stopped"
@@ -485,11 +582,11 @@ class CaptureApp:
         self.b_pause.set_enabled(self.state == "running")
         self.b_stop.set_enabled(not stopped)
         if self.state == "running":
-            self.l_prompt.configure(text="●", fg=REC)
+            self.l_prompt.configure(text="●", fg=C["rec"])
         elif self.state == "paused":
-            self.l_prompt.configure(text="●", fg=DIM)
+            self.l_prompt.configure(text="●", fg=C["dim"])
         else:
-            self.l_prompt.configure(text=">", fg=FG)
+            self.l_prompt.configure(text=">", fg=C["fg"])
 
     def play(self):
         # Never a screen number on a capture: if some were shown, give the

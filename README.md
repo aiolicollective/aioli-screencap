@@ -30,12 +30,13 @@ It creates an isolated environment, `.venv\`, in the folder and installs `mss` a
 
 Double-click `screencap.bat`. Pick the screen, the folder, the interval and its unit, the format, then **▶ play**.
 
-- **identify**: shows each screen's number at its centre for 2 seconds (the chosen screen in white). These are the tool's numbers, not necessarily the ones in Windows display settings.
+- **identify**: shows each screen's number at its centre for 2 seconds (the chosen screen stands out from the others). These are the tool's numbers, not necessarily the ones in Windows display settings.
 - **↻ refresh**: reads the screens again, after plugging in or unplugging one.
 - **folder**: any folder, through *browse…* or by typing the path. The last 8 folders used are in the drop-down list.
 - **session** (optional): the subfolder is then named `SessionName_YYYY-MM-DD_HH-MM-SS`. Without a name, `session_YYYY-MM-DD_HH-MM-SS`.
 - **pause** suspends the session; **play** resumes it with an immediate capture.
 - **stop** ends the session.
+- **invert palette** (top right): switches between the light and the dark interface. The choice is remembered.
 - Settings are remembered in `config.json`.
 - If something goes wrong, run `screencap.bat debug` or read `logs\screencap.log`.
 
