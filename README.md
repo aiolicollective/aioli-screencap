@@ -34,6 +34,8 @@ Double-click `screencap.bat`. Pick the screen, the folder, the interval and its 
 - **↻ refresh**: reads the screens again, after plugging in or unplugging one.
 - **folder**: any folder, through *browse…* or by typing the path. The last 8 folders used are in the drop-down list.
 - **session** (optional): the subfolder is then named `SessionName_YYYY-MM-DD_HH-MM-SS`. Without a name, `session_YYYY-MM-DD_HH-MM-SS`.
+- **continue…** (next to the session name): pick an existing session folder instead of starting a new one. The next **play** writes into it and numbering picks up after the highest capture already there. Click again to cancel. It applies to one play: after **stop**, the next **play** starts a new session again.
+- Nothing is ever overwritten: every capture is created as a new file, and if a name is already taken the next number is used.
 - **pause** suspends the session; **play** resumes it with an immediate capture.
 - **stop** ends the session.
 - **snap** (while recording or paused): one extra capture right now, named `…_snap`. The schedule does not move, and a paused session stays paused.

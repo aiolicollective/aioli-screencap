@@ -31,7 +31,7 @@ except ImportError as e:  # venv missing or incomplete
     IMPORT_ERROR = e
 
 APP_NAME = "aioli-screencap"
-VERSION = "1.3"
+VERSION = "1.4"
 SITE = "aiolicollective.com"
 REPO = "github.com/aiolicollective/aioli-screencap"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -48,6 +48,9 @@ MAX_INTERVAL = 24 * 3600      # 24 h
 MAX_CONSECUTIVE_ERRORS = 5    # e.g. disk full: stop cleanly
 MAX_RECENT = 8                # recent folders remembered
 IDENTIFY_MS = 2000            # how long the screen numbers stay up
+# Files this tool writes: 2026-09-17_14-32-05_00012.jpg (or ..._00012_snap.png)
+CAPTURE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_(\d{5,})(?:_snap)?\.(?:jpg|png)$",
+                        re.IGNORECASE)
 
 # Look: the collective's logo, "> ai.oli/", a terminal prompt in black on white.
 # "invert palette" swaps to the dark version. Within a palette every value is
@@ -156,6 +159,26 @@ def fmt_duration(seconds):
     h, rest = divmod(seconds, 3600)
     m, s = divmod(rest, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def scan_captures(folder):
+    """(highest capture number, number of captures) among this tool's files in a folder.
+    Other files are ignored."""
+    top = count = 0
+    for name in os.listdir(folder):
+        m = CAPTURE_RE.match(name)
+        if m:
+            count += 1
+            top = max(top, int(m.group(1)))
+    return top, count
+
+
+def shorten(text, limit=36):
+    """Keeps the start and the end of a long name, so the window does not grow."""
+    if len(text) <= limit:
+        return text
+    head = (limit - 1) // 2
+    return f"{text[:head]}…{text[-(limit - 1 - head):]}"
 
 
 def plural(n, word):
@@ -269,7 +292,9 @@ class CaptureApp:
         self.msgs = queue.Queue()             # capture thread -> interface
         self.worker = None
         self.state = "stopped"
-        self.count = 0
+        self.count = 0                        # captures in this run
+        self.next_index = 1                   # number of the next file
+        self.resume_folder = None             # set by "continue…", used by the next play
         self.next_capture = None
         self.monitors = []
         self.overlays = []                    # open "identify" windows
@@ -354,8 +379,9 @@ class CaptureApp:
         label("session", 5)
         self.e_name = self.entry(f, self.session_name, f_base, width=36)
         self.e_name.grid(row=5, column=1, sticky="ew", **row_pad)
-        tk.Label(f, text="// optional", font=f_small, bg=C["bg"], fg=C["dim"]).grid(
-            row=5, column=2, sticky="w", padx=(px(8), 0))
+        # continue an existing session folder instead of creating a new one
+        self.b_resume = FlatButton(f, "continue…", self.choose_resume, f_base)
+        self.b_resume.grid(row=5, column=2, sticky="w", padx=(px(8), 0))
 
         # interval
         label("every", 6)
@@ -559,6 +585,32 @@ class CaptureApp:
         self.overlays = []
         return was_open
 
+    def choose_resume(self):
+        """Arms "continue": the next play writes into an existing session folder."""
+        if self.resume_folder is not None:   # second click: back to a new session
+            self.resume_folder = None
+            self.detail.set("// ready")
+            self.refresh_ui()
+            return
+        d = filedialog.askdirectory(title="Session folder to continue", mustexist=True,
+                                    initialdir=self.folder.get() or os.path.expanduser("~"))
+        if not d:
+            return
+        d = os.path.normpath(d)
+        try:
+            top, count = scan_captures(d)
+        except OSError as e:
+            messagebox.showerror("Folder not readable", f"{d}\n\n{e}")
+            return
+        if count == 0 and not messagebox.askyesno(
+                "No captures here", f"{d}\n\nThis folder has no capture from this tool.\n"
+                                    "Continue in it anyway?"):
+            return
+        self.resume_folder = d
+        self.detail.set(f"// continue: {shorten(os.path.basename(d))} · "
+                        f"{plural(count, 'capture')} · next #{top + 1:05d}")
+        self.refresh_ui()
+
     def browse(self):
         d = filedialog.askdirectory(initialdir=self.folder.get() or os.path.expanduser("~"))
         if d:
@@ -585,6 +637,13 @@ class CaptureApp:
         self.b_pause.set_enabled(self.state == "running")
         self.b_stop.set_enabled(not stopped)
         self.b_snap.set_enabled(not stopped)
+        self.b_resume.set_enabled(stopped)
+        self.b_resume.set_selected(stopped and self.resume_folder is not None)
+        if stopped and self.resume_folder is not None:
+            # the folder and the session name come from the folder being continued
+            self.e_folder.configure(state="disabled")
+            self.e_name.configure(state="disabled")
+            self.b_browse.set_enabled(False)
         if self.state == "running":
             self.l_prompt.configure(text="●", fg=C["rec"])
         elif self.state == "paused":
@@ -612,14 +671,26 @@ class CaptureApp:
                                  "Pick an interval between 1 second and 24 hours.")
             return
 
-        base = self.folder.get().strip()
-        if not base:
-            messagebox.showerror("No folder", "Pick a destination folder.")
-            return
-        base = os.path.abspath(os.path.expanduser(base))
-        name = clean_name(self.session_name.get()) or "session"
-        session = f"{name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}"
-        folder = os.path.join(base, session)
+        if self.resume_folder is not None:
+            # continue: same folder, numbering picks up after the highest file
+            folder = self.resume_folder
+            base, session = os.path.split(folder)
+            try:
+                top, _ = scan_captures(folder)
+            except OSError as e:
+                messagebox.showerror("Folder not readable", f"{folder}\n\n{e}")
+                return
+            next_index = top + 1
+        else:
+            base = self.folder.get().strip()
+            if not base:
+                messagebox.showerror("No folder", "Pick a destination folder.")
+                return
+            base = os.path.abspath(os.path.expanduser(base))
+            name = clean_name(self.session_name.get()) or "session"
+            session = f"{name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}"
+            folder = os.path.join(base, session)
+            next_index = 1
         try:
             os.makedirs(folder, exist_ok=True)
             probe = os.path.join(folder, ".write_test")
@@ -637,7 +708,10 @@ class CaptureApp:
         self.cfg.update(self.current_settings())
         save_config(self.cfg)
 
+        resumed = self.resume_folder is not None
+        self.resume_folder = None            # used once
         self.count = 0
+        self.next_index = next_index
         self.next_capture = None
         # New event for every session: a stop followed by an immediate play
         # cannot wake up the previous capture thread.
@@ -645,15 +719,17 @@ class CaptureApp:
         self.snap_event.clear()
         self.run_event.set()
         self.state = "running"
-        self.detail.set(f"// folder: {session}")
+        self.detail.set(f"// continue: {shorten(session)} · from #{next_index:05d}" if resumed
+                        else f"// folder: {shorten(session)}")
         self.worker = threading.Thread(
             target=self.loop,
             args=(self.cb_mon.current(), seconds, self.fmt.get(), folder, self.stop_event,
                   start_delay),
             daemon=True)
         self.worker.start()
-        log.info("Session started: screen %s, %s s, %s, %s",
-                 self.cb_mon.current() + 1, seconds, self.fmt.get(), folder)
+        log.info("Session %s: screen %s, %s s, %s, %s, from #%s",
+                 "continued" if resumed else "started",
+                 self.cb_mon.current() + 1, seconds, self.fmt.get(), folder, next_index)
         self.refresh_ui()
 
     def snap(self):
@@ -759,17 +835,34 @@ class CaptureApp:
                         return
 
     def save_capture(self, sct, mon, fmt, folder, tag):
-        """Grabs the screen and writes one numbered file; a snap gets a _snap suffix."""
+        """Grabs the screen and writes one new numbered file; a snap gets a _snap suffix."""
         shot = sct.grab(mon)
         img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
         stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         ext = ".png" if fmt == "PNG" else ".jpg"
         suffix = f"_{tag}" if tag else ""
-        path = os.path.join(folder, f"{stamp}_{self.count + 1:05d}{suffix}{ext}")
-        if fmt == "PNG":
-            img.save(path, compress_level=1)   # fast compression
-        else:
-            img.save(path, quality=90)
+        while True:
+            path = os.path.join(folder, f"{stamp}_{self.next_index:05d}{suffix}{ext}")
+            self.next_index += 1
+            try:
+                # "x": the file must not exist yet. Nothing is ever overwritten;
+                # on a clash the next number is used.
+                fh = open(path, "xb")
+            except FileExistsError:
+                continue
+            break
+        try:
+            with fh:
+                if fmt == "PNG":
+                    img.save(fh, format="PNG", compress_level=1)   # fast compression
+                else:
+                    img.save(fh, format="JPEG", quality=90)
+        except BaseException:
+            try:
+                os.remove(path)   # no half-written file left behind
+            except OSError:
+                pass
+            raise
         self.count += 1
         self.msgs.put(("snap" if tag else "ok", path))
 
